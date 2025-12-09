@@ -357,7 +357,7 @@ final class IndexStoreReader {
                 let nameStart = afterPrefix.index(after: digitIndex)
                 if afterPrefix.distance(from: nameStart, to: afterPrefix.endIndex) >= length - 1 {
                     let nameEnd = afterPrefix.index(nameStart, offsetBy: length - 1)
-                    return String(afterPrefix[digitIndex...nameEnd])
+                    return String(afterPrefix[nameStart...nameEnd])
                 }
             }
         }
