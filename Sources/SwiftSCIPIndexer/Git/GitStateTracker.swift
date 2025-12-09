@@ -18,6 +18,62 @@ final class GitStateTracker {
             .appendingPathComponent(".swift-scip-state.json")
     }
     
+    // MARK: - Branch-Aware Methods
+    
+    /// Load state from branch-specific SQLite database
+    func loadBranchState(branchName: String) -> SCIPDatabaseWriter.IndexState? {
+        let branchManager = BranchIndexManager(projectRoot: projectRoot)
+        let dbPath = branchManager.getBranchDatabasePath(branchName: branchName)
+        
+        guard FileManager.default.fileExists(atPath: dbPath.path) else {
+            return nil
+        }
+        
+        do {
+            let dbWriter = try SCIPDatabaseWriter(dbPath: dbPath, readOnly: true)
+            return try dbWriter.loadState()
+        } catch {
+            return nil
+        }
+    }
+    
+    /// Get files that changed since last index for a specific branch
+    func getChangedFilesForBranch(branchName: String) throws -> [String]? {
+        guard let state = loadBranchState(branchName: branchName) else {
+            return nil  // Full index needed
+        }
+        
+        let currentHash = try getCurrentCommitHash()
+        
+        if currentHash == state.lastCommitHash {
+            // Same commit - check working tree changes
+            return try getWorkingTreeChanges()
+        }
+        
+        // Different commit - get diff
+        return try getChangedFilesSince(commit: state.lastCommitHash)
+    }
+    
+    /// Get files that were deleted since a given commit
+    func getDeletedFilesSince(commit: String) throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["diff", "--name-only", "--diff-filter=D", commit, "HEAD", "--", "*.swift"]
+        process.currentDirectoryURL = projectRoot
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        
+        try process.run()
+        process.waitUntilExit()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        
+        return output.split(separator: "\n").map(String.init)
+    }
+    
     /// Get files that changed since last index
     /// - Returns: Array of changed file paths, or nil if full index is needed
     func getChangedFiles() throws -> [String]? {
@@ -91,9 +147,9 @@ final class GitStateTracker {
         return FileManager.default.fileExists(atPath: gitDir.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
     
-    // MARK: - Private Methods
+    // MARK: - Internal Methods
     
-    private func getChangedFilesSince(commit: String) throws -> [String] {
+    func getChangedFilesSince(commit: String) throws -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["diff", "--name-only", commit, "HEAD", "--", "*.swift"]
@@ -118,7 +174,7 @@ final class GitStateTracker {
         return Array(Set(files))  // Remove duplicates
     }
     
-    private func getWorkingTreeChanges() throws -> [String] {
+    func getWorkingTreeChanges() throws -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["status", "--porcelain", "--", "*.swift"]
