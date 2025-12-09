@@ -218,14 +218,6 @@ Incremental and branch-aware features require a git repository. The tool will fa
 - Consider using SQLite format instead of JSON
 - Use `--module` to index only specific modules
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-[Add your license information here]
-
 ## Related Projects
 
 - [SCIP](https://github.com/sourcegraph/scip) - Source Code Intelligence Protocol
