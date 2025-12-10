@@ -30,10 +30,15 @@ final class IndexStoreReader {
         
         try FileManager.default.createDirectory(at: dbPath, withIntermediateDirectories: true)
         
+        // Find libIndexStore library path
+        guard let libraryPath = Self.findLibIndexStorePath() else {
+            throw IndexStoreReaderError.libIndexStoreNotFound
+        }
+        
         self.indexStore = try IndexStoreDB(
             storePath: storePath.path,
             databasePath: dbPath.path,
-            library: nil,  // Uses system libIndexStore
+            library: libraryPath,
             waitUntilDoneInitializing: true
         )
         self.projectRoot = projectRoot
@@ -274,6 +279,58 @@ final class IndexStoreReader {
         return derivedData
             .appendingPathComponent("Index")
             .appendingPathComponent("DataStore")
+    }
+    
+    /// Find the path to libIndexStore.dylib
+    /// - Returns: Path to libIndexStore.dylib if found, nil otherwise
+    private static func findLibIndexStorePath() -> String? {
+        let fileManager = FileManager.default
+        
+        // Try to get the developer directory from xcode-select
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        process.arguments = ["-p"]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            
+            if process.terminationStatus == 0 {
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let developerPath = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespaceAndNewlines) {
+                    // Try the toolchain path
+                    let toolchainPath = URL(fileURLWithPath: developerPath)
+                        .appendingPathComponent("Toolchains")
+                        .appendingPathComponent("XcodeDefault.xctoolchain")
+                        .appendingPathComponent("usr")
+                        .appendingPathComponent("lib")
+                        .appendingPathComponent("libIndexStore.dylib")
+                    
+                    if fileManager.fileExists(atPath: toolchainPath.path) {
+                        return toolchainPath.path
+                    }
+                }
+            }
+        } catch {
+            // Fall through to default paths
+        }
+        
+        // Fall back to default Xcode path
+        let defaultPath = URL(fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib")
+        if fileManager.fileExists(atPath: defaultPath.path) {
+            return defaultPath.path
+        }
+        
+        // Try Command Line Tools path
+        let cltPath = URL(fileURLWithPath: "/Library/Developer/CommandLineTools/usr/lib/libIndexStore.dylib")
+        if fileManager.fileExists(atPath: cltPath.path) {
+            return cltPath.path
+        }
+        
+        return nil
     }
     
     /// Map IndexStoreDB symbol kind to our SymbolKind
