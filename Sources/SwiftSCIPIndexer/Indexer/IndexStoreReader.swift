@@ -30,19 +30,118 @@ final class IndexStoreReader {
         
         try FileManager.default.createDirectory(at: dbPath, withIntermediateDirectories: true)
         
-        // Find libIndexStore library path
-        guard let libraryPath = Self.findLibIndexStorePath() else {
-            throw IndexStoreReaderError.libIndexStoreNotFound
-        }
+        // Find and load libIndexStore dynamically
+        let library = try Self.findIndexStoreLibrary()
         
         self.indexStore = try IndexStoreDB(
             storePath: storePath.path,
             databasePath: dbPath.path,
-            library: libraryPath,
+            library: library,
             waitUntilDoneInitializing: true
         )
         self.projectRoot = projectRoot
         self.includeSnippets = includeSnippets
+    }
+    
+    /// Find the libIndexStore.dylib library dynamically
+    /// - Returns: IndexStoreLibrary instance
+    /// - Throws: IndexStoreReaderError.libIndexStoreNotFound if library cannot be found
+    private static func findIndexStoreLibrary() throws -> IndexStoreLibrary {
+        // Try to find libIndexStore.dylib in order of preference:
+        // 1. Use xcode-select to get the active developer directory
+        // 2. Check common Xcode locations
+        // 3. Check Command Line Tools location
+        
+        let candidatePaths = Self.getLibIndexStoreCandidatePaths()
+        
+        for path in candidatePaths {
+            if FileManager.default.fileExists(atPath: path) {
+                do {
+                    return try IndexStoreLibrary(dylibPath: path)
+                } catch {
+                    // Try next candidate if this one fails to load
+                    continue
+                }
+            }
+        }
+        
+        throw IndexStoreReaderError.libIndexStoreNotFound
+    }
+    
+    /// Get candidate paths for libIndexStore.dylib
+    /// - Returns: Array of potential paths, ordered by preference
+    private static func getLibIndexStoreCandidatePaths() -> [String] {
+        var paths: [String] = []
+        
+        // 1. Try xcode-select to get the currently selected developer directory
+        if let developerDir = getXcodeSelectPath() {
+            // Standard path within Xcode toolchain
+            let toolchainPath = (developerDir as NSString)
+                .appendingPathComponent("Toolchains/XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib")
+            paths.append(toolchainPath)
+            
+            // Some setups might have it directly in the developer directory
+            let directPath = (developerDir as NSString)
+                .appendingPathComponent("usr/lib/libIndexStore.dylib")
+            paths.append(directPath)
+        }
+        
+        // 2. Check common Xcode.app locations (for multiple Xcode installations)
+        let xcodeLocations = [
+            "/Applications/Xcode.app",
+            "/Applications/Xcode-beta.app",
+        ]
+        
+        // Also check for xcodes-managed installations (e.g., Xcode-15.0.app, Xcode-16.0.app)
+        if let contents = try? FileManager.default.contentsOfDirectory(atPath: "/Applications") {
+            for item in contents where item.hasPrefix("Xcode") && item.hasSuffix(".app") {
+                let xcodePath = "/Applications/\(item)"
+                if !xcodeLocations.contains(xcodePath) {
+                    let libPath = "\(xcodePath)/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib"
+                    paths.append(libPath)
+                }
+            }
+        }
+        
+        for xcodePath in xcodeLocations {
+            let libPath = "\(xcodePath)/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib"
+            paths.append(libPath)
+        }
+        
+        // 3. Check Command Line Tools location (fallback for systems without Xcode)
+        paths.append("/Library/Developer/CommandLineTools/usr/lib/libIndexStore.dylib")
+        
+        return paths
+    }
+    
+    /// Get the developer directory path from xcode-select
+    /// - Returns: Developer directory path or nil if xcode-select fails
+    private static func getXcodeSelectPath() -> String? {
+        let process = Process()
+        let pipe = Pipe()
+        
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        process.arguments = ["-p"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            
+            guard process.terminationStatus == 0 else {
+                return nil
+            }
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            
+            return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            return nil
+        }
     }
     
     /// Find all symbols in the index store
@@ -281,58 +380,6 @@ final class IndexStoreReader {
             .appendingPathComponent("DataStore")
     }
     
-    /// Find the path to libIndexStore.dylib
-    /// - Returns: Path to libIndexStore.dylib if found, nil otherwise
-    private static func findLibIndexStorePath() -> String? {
-        let fileManager = FileManager.default
-        
-        // Try to get the developer directory from xcode-select
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        process.arguments = ["-p"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            if process.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let developerPath = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespaceAndNewlines) {
-                    // Try the toolchain path
-                    let toolchainPath = URL(fileURLWithPath: developerPath)
-                        .appendingPathComponent("Toolchains")
-                        .appendingPathComponent("XcodeDefault.xctoolchain")
-                        .appendingPathComponent("usr")
-                        .appendingPathComponent("lib")
-                        .appendingPathComponent("libIndexStore.dylib")
-                    
-                    if fileManager.fileExists(atPath: toolchainPath.path) {
-                        return toolchainPath.path
-                    }
-                }
-            }
-        } catch {
-            // Fall through to default paths
-        }
-        
-        // Fall back to default Xcode path
-        let defaultPath = URL(fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib")
-        if fileManager.fileExists(atPath: defaultPath.path) {
-            return defaultPath.path
-        }
-        
-        // Try Command Line Tools path
-        let cltPath = URL(fileURLWithPath: "/Library/Developer/CommandLineTools/usr/lib/libIndexStore.dylib")
-        if fileManager.fileExists(atPath: cltPath.path) {
-            return cltPath.path
-        }
-        
-        return nil
-    }
-    
     /// Map IndexStoreDB symbol kind to our SymbolKind
     private static func mapSymbolKind(_ kind: IndexSymbolKind) -> SymbolKind {
         switch kind {
@@ -434,7 +481,16 @@ enum IndexStoreReaderError: Error, LocalizedError {
         case .indexStoreNotFound(let path):
             return "Index store not found at: \(path). Make sure to build the project first with indexing enabled."
         case .libIndexStoreNotFound:
-            return "libIndexStore not found. Make sure Xcode or Command Line Tools are installed."
+            return """
+                libIndexStore.dylib not found. Please ensure one of the following:
+                  1. Xcode is installed and selected via 'xcode-select -s /Applications/Xcode.app'
+                  2. Command Line Tools are installed ('xcode-select --install')
+                
+                Searched locations include:
+                  - <xcode-select -p>/Toolchains/XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib
+                  - /Applications/Xcode*.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib
+                  - /Library/Developer/CommandLineTools/usr/lib/libIndexStore.dylib
+                """
         }
     }
 }
